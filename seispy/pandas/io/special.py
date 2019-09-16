@@ -32,6 +32,10 @@ def read_special(path, schema="hypoinverse2000", tables=None):
 
     if schema == "hypoinverse2000":
         return(_read_hypoinverse2000(path))
+
+    elif schema == "japan_jma":
+        return(_read_japan_jma(path))
+
     else:
         raise(NotImplementedError("schema not recognized: %s" % schema))
 
@@ -53,6 +57,26 @@ def _index_rows(fname):
         np.array([i for i in range(len(data)) if len(data[i]) in (164, 179)]),
         np.array([i for i in range(len(data)) if len(data[i]) == 120])
     )
+
+def _index_rows_jma(fname):
+    """
+    Return the total number of lines and indices of origin
+    rows in input file.
+
+    This is a utility function for parsing hypoinverse2000
+    phase format data.
+    """
+    with open(fname) as inf:
+        data = inf.read().rstrip("\n").split("\n")
+    nrows = len(data)
+    # The variable lengths (164, 179) of origin rows is to account for NCEDC
+    # format data which is slightly different than SCEDC data.
+    return (
+        nrows,
+        np.array([i for i in range(len(data)) if data[i][0] == 'J']),
+        np.array([i for i in range(len(data)) if data[i][0] == '_'])
+    )
+
 
 def _read_hypoinverse2000(path):
     schema_data = _schema.get_schema("hypoinverse2000")
@@ -106,4 +130,62 @@ def _read_hypoinverse2000(path):
                 db[table][field] = db[table][field] \
                     * schema_data["Attributes"][field]["const"]
     db["arrival"] = db["arrival"].drop(columns=["blank1", "blank2", "blank3"])
+    return (db)
+
+def _read_japan_jma(path):
+    schema_data = _schema.get_schema("japan_jma")
+    nrows, origin_rows, arrival_rows = _index_rows_jma(path)
+    db = {}
+    db["origin"] = pd.read_fwf(
+        path,
+        widths=[
+            schema_data["Attributes"][field]["width"]
+            for field in schema_data["Relations"]["origin"]
+        ],
+        names=schema_data["Relations"]["origin"],
+        skiprows=[i for i in range(nrows) if i not in origin_rows],
+        header=None
+    )
+    db['origin']['evid'] = db['origin'].year.astype(str)+db['origin'].month.astype(str)+\
+            db['origin'].day.astype(str)+db['origin'].hour.astype(str)+db['origin'].minute.astype(str)+\
+            db['origin'].second.astype(str)
+
+    db["arrival"] = pd.read_fwf(
+        path,
+        widths=[
+            schema_data["Attributes"][field]["width"]
+            for field in schema_data["Relations"]["arrival"]
+        ],
+        names=schema_data["Relations"]["arrival"],
+        skiprows=[i for i in range(nrows) if i not in arrival_rows],
+        header=None
+    )
+    start = 0
+    for iorigin in range(len(origin_rows)-1):
+        stop = start + len(
+            arrival_rows[
+                 (arrival_rows > origin_rows[iorigin])
+                &(arrival_rows < origin_rows[iorigin+1])
+            ]
+        )
+        db['arrival'].loc[start: start+nrows, 'evid'] = db['origin'].loc[iorigin, 'evid']
+        start = stop
+    for table in db:
+        db[table] = db[table].fillna(
+            value={
+                field: schema_data["Attributes"][field]["null"]
+                for field in db[table].columns
+            }
+        )
+        db[table] = db[table].astype(
+           {
+               field: schema_data["Attributes"][field]["dtype"]
+               for field in db[table].columns
+           }
+        )
+        #for field in db[table].columns:
+        #    if "const" in schema_data["Attributes"][field]:
+        #        db[table][field] = db[table][field] \
+        #            * schema_data["Attributes"][field]["const"]
+    #db["arrival"] = db["arrival"].drop(columns=["blank1", "blank2", "blank3"])
     return (db)
